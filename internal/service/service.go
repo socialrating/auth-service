@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -19,21 +19,33 @@ type TokenService struct {
 	RefreshTokenTTL time.Duration
 	TokenRepo       repository.TokenRepository
 }
+type Config struct {
+	JWTSecret string `yaml:"jwt_secret"`
+}
+
+func NewTokenService(JWTSecret string, accessTTL, refreshTTL time.Duration, TokenRepo repository.TokenRepository) *TokenService {
+	return &TokenService{
+		SecretKey:       JWTSecret,
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 7 * 24 * time.Hour,
+		TokenRepo:       TokenRepo,
+	}
+}
 
 func (s *TokenService) GenerateTokenPair(ctx context.Context, userID string) (*models.TokenPair, error) {
 	jti, err := generateRandomString(32)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate random string: %w", err)
 	}
 
 	accessToken, err := s.generateAccessToken(userID, jti)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate access token: %w", err)
 	}
 
 	refreshToken, hash, err := generateRefreshToken()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate refresh token: %w", err)
 	}
 
 	record := models.TokenRecord{
@@ -45,7 +57,7 @@ func (s *TokenService) GenerateTokenPair(ctx context.Context, userID string) (*m
 	}
 
 	if err := s.TokenRepo.Store(ctx, record); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store token record: %w", err)
 	}
 
 	return &models.TokenPair{
@@ -59,38 +71,39 @@ func (s *TokenService) RefreshTokens(ctx context.Context, accessTokenRaw, refres
 		return []byte(s.SecretKey), nil
 	})
 	if err != nil || !parsed.Valid {
-		return nil, errors.New("invalid access token")
+		return nil, fmt.Errorf("invalid access token: %w", err)
 	}
 
 	claims, ok := parsed.Claims.(jwt.MapClaims)
 	if !ok {
-		return nil, errors.New("invalid claims")
+		return nil, fmt.Errorf("invalid claims type %w", err)
 	}
 
 	jti, ok := claims["jti"].(string)
 	if !ok {
-		return nil, errors.New("missing jti")
+		return nil, fmt.Errorf("missing jti claim")
 	}
 	userID, ok := claims["sub"].(string)
 	if !ok {
-		return nil, errors.New("missing sub")
+		return nil, fmt.Errorf("missing sub claim")
 	}
 
 	record, err := s.TokenRepo.FindByJTI(ctx, jti)
 	if err != nil {
-		return nil, errors.New("refresh token not found")
+		return nil, fmt.Errorf("refresh token not found: %w", err)
 	}
 
 	if time.Now().After(record.ExpiresAt) {
-		return nil, errors.New("refresh token expired")
+		return nil, fmt.Errorf("refresh token expired")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(record.TokenHash), []byte(refreshToken)); err != nil {
-		return nil, errors.New("refresh token mismatch")
+		return nil, fmt.Errorf("refresh token mismatch: %w", err)
 	}
 
-	_ = s.TokenRepo.DeleteByJTI(ctx, jti)
-
+	if err := s.TokenRepo.DeleteByJTI(ctx, jti); err != nil {
+		return nil, fmt.Errorf("delete old token record: %w", err)
+	}
 	return s.GenerateTokenPair(ctx, userID)
 }
 
@@ -107,12 +120,12 @@ func (s *TokenService) generateAccessToken(userID, jti string) (string, error) {
 func generateRefreshToken() (string, string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("read random bytes: %w", err)
 	}
 	token := base64.URLEncoding.EncodeToString(raw)
 	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("hash refresh token: %w", err)
 	}
 	return token, string(hash), nil
 }
@@ -120,7 +133,7 @@ func generateRefreshToken() (string, string, error) {
 func generateRandomString(length int) (string, error) {
 	raw := make([]byte, length)
 	if _, err := rand.Read(raw); err != nil {
-		return "", err
+		return "", fmt.Errorf("read random bytes: %w", err)
 	}
 	return base64.URLEncoding.EncodeToString(raw), nil
 }
