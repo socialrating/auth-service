@@ -2,47 +2,26 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
-	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/socialrating/auth-service/config"
-	"github.com/socialrating/auth-service/internal/handler"
-	"github.com/socialrating/auth-service/internal/repository"
-	"github.com/socialrating/auth-service/internal/service"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	
+	"github.com/socialrating/auth-service/internal/application"
 )
 
 func main() {
+	cfgPath := flag.String("config", "path/to/config.yaml", "Path to the configuration file")
+	flag.Parse()
+
+	// через flag передавать config при запуске сервиса
 	ctx := context.Background()
 
-	cfg, err := config.LoadConfig("config.yaml")
-
+	cfg, err := config.LoadConfig(*cfgPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.MongoURI))
-	if err != nil {
-		log.Fatal(err)
+	if err := application.Run(ctx, cfg); err != nil {
+		log.Fatalf("failed to run application: %v", err)
 	}
-	db := client.Database("auth_db")
-	tokenRepo := repository.NewTokenRepository(db)
-
-	tokenService := &service.TokenService{
-		SecretKey:       cfg.JWTSecret,
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 7 * 24 * time.Hour,
-		TokenRepo:       tokenRepo,
-	}
-
-	r := gin.Default()
-	h := handler.NewHandler(tokenService)
-
-	r.POST("/login", h.Login)
-	r.POST("/refresh", h.Refresh)
-
-	r.Run(":" + cfg.Port)
 }
