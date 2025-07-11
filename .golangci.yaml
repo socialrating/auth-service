@@ -1,8 +1,69 @@
-version: "2"
+version: 2
+
+run:
+  timeout: 3m
+
 linters:
   enable:
-    - govet
-    - revive
     - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - iface
+    - wsl
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # Чтобы добавить новое исключение:
+      # 1. Укажите полный импортный путь пакета и тип/функцию.
+      # 2. Формат записи: "(import/path.Тип).Метод" для методов или "import/path.Функция" для функций.
+      # 3. Для методов указателя используйте звёздочку: "(*import/path.Тип).Метод".
+      # Пример: import/path - github.com/spf13/afero
+      # docs: https://github.com/kisielk/errcheck#excluding-functions
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (io/fs.File).Close
+        - (*compress/gzip.Writer).Close
+        - (*compress/gzip.Writer).Write
+        - (*compress/gzip.Reader).Close
+        - (*archive/tar.Writer).Close
+        - (*google.golang.org/grpc.ClientConn).Close
+        - github.com/spf13/afero.WriteFile
+    iface:
+      enable:
+        - opaque # Identifies functions that return interfaces, but the actual returned value is always a single concrete implementation.
+
+formatters:
+  enable:
     - gofmt
-    - goimports
+    - gofumpt
+    - gci
+    - golines
+  settings:
+    gofumpt:
+      module-path: github.com/socialrating/auth-service
+      extra-rules: true
+    gci:
+      # Форматтер для групировки импортов
+      # По умолчанию порядок секций: standard > default > custom > blank > dot > alias > localmodule.
+      # Если custom-order: true, будет соблюдаться порядок, указанный в секции `sections`.
+      sections:
+        - standard # Standard section: captures all standard packages ("fmt", "io")
+        - default # Default section: contains all imports that could not be matched to another section type ("github.com/pkg/errors")
+        - prefix(github.com/socialrating/auth-service)
+      # Включить пользовательский порядок секций: будут идти в том порядке, как перечислены в `sections`.
+      custom-order: true
+      # Отключить лексикографическую сортировку внутри пользовательских секций.
+      no-lex-order: true
+      # Запретить комментарии над строкой импорта.
+      no-inline-comments: true
+      # Запретить комментарии в той же строке, что и импорт.
+      no-prefix-comments: true
+    golines:
+      max-len: 120 # максимально допустимая длина строки
+      tab-len: 4 # длина табуляции в пробелах (значение по умолчанию)
+      shorten-comments: true # укорачивать длинные комментарии
+      reformat-tags: true # рефлоу тэгов в struct
