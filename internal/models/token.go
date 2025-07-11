@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-type TokenRecord struct {
+type RefreshTokenRecord struct {
 	JTI       string    `bson:"jti"`
 	UserID    string    `bson:"user_id"`
 	IssuedAt  time.Time `bson:"issued_at"`
@@ -11,6 +11,6 @@ type TokenRecord struct {
 }
 
 type TokenPair struct {
-	AccessToken  string `bson:"access_token"`
-	RefreshToken string `bson:"refresh_token"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
 }

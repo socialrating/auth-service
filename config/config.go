@@ -7,9 +7,14 @@ import (
 )
 
 type Config struct {
-	Port      string `yaml:"port"`
+	Server    Server `yaml:"server"`
 	MongoURI  string `yaml:"mongo_uri"`
 	JWTSecret string `yaml:"jwt_secret"`
+}
+
+type Server struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -19,6 +24,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var cfg Config
+
 	err = yaml.Unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err

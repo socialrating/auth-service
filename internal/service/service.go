@@ -2,88 +2,72 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+
 	"github.com/socialrating/auth-service/internal/models"
-	"github.com/socialrating/auth-service/internal/repository"
-	"golang.org/x/crypto/bcrypt"
 )
 
-type TokenService struct {
-	SecretKey       string
-	AccessTokenTTL  time.Duration
-	RefreshTokenTTL time.Duration
-	TokenRepo       repository.TokenRepository
-}
-type Config struct {
-	JWTSecret string `yaml:"jwt_secret"`
+type TokenRepository interface {
+	Store(ctx context.Context, token models.RefreshTokenRecord) error
+	FindByJTI(ctx context.Context, jti string) (*models.RefreshTokenRecord, error)
+	DeleteByJTI(ctx context.Context, jti string) error
 }
 
-func NewTokenService(JWTSecret string, accessTTL, refreshTTL time.Duration, TokenRepo repository.TokenRepository) *TokenService {
-	return &TokenService{
-		SecretKey:       JWTSecret,
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 7 * 24 * time.Hour,
-		TokenRepo:       TokenRepo,
-	}
+const (
+	// accessTokenTTL is the default time-to-live for access tokens.
+	accessTokenTTL = 15 * time.Minute
+	// refreshTokenTTL is the default time-to-live for refresh tokens.
+	refreshTokenTTL = 7 * 24 * time.Hour
+)
+
+var signedMethod = jwt.SigningMethodHS512
+
+type TokenService struct {
+	secretKey string
+	TokenRepo TokenRepository
+}
+
+func NewTokenService(JWTSecret string, TokenRepo TokenRepository) *TokenService {
+	return &TokenService{secretKey: JWTSecret, TokenRepo: TokenRepo}
 }
 
 func (s *TokenService) GenerateTokenPair(ctx context.Context, userID string) (*models.TokenPair, error) {
-	jti, err := generateRandomString(32)
-	if err != nil {
-		return nil, fmt.Errorf("generate random string: %w", err)
-	}
+	jti := uuid.New()
 
-	accessToken, err := s.generateAccessToken(userID, jti)
+	tokenPair, err := s.generateTokens(ctx, userID, jti.String())
 	if err != nil {
 		return nil, fmt.Errorf("generate access token: %w", err)
 	}
 
-	refreshToken, hash, err := generateRefreshToken()
-	if err != nil {
-		return nil, fmt.Errorf("generate refresh token: %w", err)
-	}
-
-	record := models.TokenRecord{
-		JTI:       jti,
-		UserID:    userID,
-		IssuedAt:  time.Now(),
-		ExpiresAt: time.Now().Add(s.RefreshTokenTTL),
-		TokenHash: hash,
-	}
-
-	if err := s.TokenRepo.Store(ctx, record); err != nil {
-		return nil, fmt.Errorf("store token record: %w", err)
-	}
-
-	return &models.TokenPair{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}, nil
+	return tokenPair, nil
 }
 
-func (s *TokenService) RefreshTokens(ctx context.Context, accessTokenRaw, refreshToken string) (*models.TokenPair, error) {
-	parsed, err := jwt.Parse(accessTokenRaw, func(token *jwt.Token) (interface{}, error) {
-		return []byte(s.SecretKey), nil
+func (s *TokenService) RefreshTokens(
+	ctx context.Context,
+	refreshToken string,
+) (*models.TokenPair, error) {
+	rtParsed, err := jwt.Parse(refreshToken, func(token *jwt.Token) (interface{}, error) {
+		return []byte(s.secretKey), nil
 	})
-	if err != nil || !parsed.Valid {
-		return nil, fmt.Errorf("invalid access token: %w", err)
+	if err != nil || !rtParsed.Valid {
+		return nil, fmt.Errorf("invalid refresh token: %w", err)
 	}
 
-	claims, ok := parsed.Claims.(jwt.MapClaims)
+	atClaims, ok := rtParsed.Claims.(jwt.MapClaims)
 	if !ok {
 		return nil, fmt.Errorf("invalid claims type %w", err)
 	}
 
-	jti, ok := claims["jti"].(string)
+	jti, ok := atClaims["jti"].(string)
 	if !ok {
 		return nil, fmt.Errorf("missing jti claim")
 	}
-	userID, ok := claims["sub"].(string)
+
+	userID, ok := atClaims["sub"].(string)
 	if !ok {
 		return nil, fmt.Errorf("missing sub claim")
 	}
@@ -97,43 +81,52 @@ func (s *TokenService) RefreshTokens(ctx context.Context, accessTokenRaw, refres
 		return nil, fmt.Errorf("refresh token expired")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(record.TokenHash), []byte(refreshToken)); err != nil {
-		return nil, fmt.Errorf("refresh token mismatch: %w", err)
-	}
-
 	if err := s.TokenRepo.DeleteByJTI(ctx, jti); err != nil {
 		return nil, fmt.Errorf("delete old token record: %w", err)
 	}
+
 	return s.GenerateTokenPair(ctx, userID)
 }
 
-func (s *TokenService) generateAccessToken(userID, jti string) (string, error) {
-	claims := jwt.MapClaims{
+func (s *TokenService) generateTokens(ctx context.Context, userID, jti string) (*models.TokenPair, error) {
+	iat := time.Now()
+	atExp := time.Now().Add(accessTokenTTL)
+	rtExp := time.Now().Add(refreshTokenTTL)
+
+	accessTokenClaims := jwt.MapClaims{
 		"sub": userID,
 		"jti": jti,
-		"exp": time.Now().Add(s.AccessTokenTTL).Unix(),
+		"iat": iat.Unix(),
+		"exp": atExp.Unix(),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
-	return token.SignedString([]byte(s.SecretKey))
-}
+	jwtAccessToken := jwt.NewWithClaims(signedMethod, accessTokenClaims)
 
-func generateRefreshToken() (string, string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", fmt.Errorf("read random bytes: %w", err)
-	}
-	token := base64.URLEncoding.EncodeToString(raw)
-	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
+	token, err := jwtAccessToken.SignedString([]byte(s.secretKey))
 	if err != nil {
-		return "", "", fmt.Errorf("hash refresh token: %w", err)
+		return nil, fmt.Errorf("sign access token: %w", err)
 	}
-	return token, string(hash), nil
-}
 
-func generateRandomString(length int) (string, error) {
-	raw := make([]byte, length)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
+	refreshTokenClaims := jwt.MapClaims{
+		"sub": userID,
+		"jti": jti,
+		"iat": iat.Unix(),
+		"exp": rtExp.Unix(),
 	}
-	return base64.URLEncoding.EncodeToString(raw), nil
+	jwtRefreshToken := jwt.NewWithClaims(signedMethod, refreshTokenClaims)
+
+	tokenRefresh, err := jwtRefreshToken.SignedString([]byte(s.secretKey))
+	if err != nil {
+		return nil, fmt.Errorf("sign refresh token: %w", err)
+	}
+
+	if err := s.TokenRepo.Store(ctx, models.RefreshTokenRecord{
+		JTI:       jti,
+		UserID:    userID,
+		IssuedAt:  iat,
+		ExpiresAt: rtExp,
+	}); err != nil {
+		return nil, fmt.Errorf("store token record: %w", err)
+	}
+
+	return &models.TokenPair{AccessToken: token, RefreshToken: tokenRefresh}, nil
 }
